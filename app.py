@@ -21,6 +21,7 @@ st.set_page_config(
 # ============================================================
 
 def get_api_key():
+
     try:
         if "GEMINI_API_KEY" in st.secrets:
             return st.secrets["GEMINI_API_KEY"]
@@ -38,19 +39,16 @@ api_key = get_api_key()
 # ============================================================
 
 def get_available_models(api_key):
-    """
-    Automatically retrieve Gemini models available
-    to the supplied API key.
-    """
 
     try:
+
         genai.configure(api_key=api_key)
 
         available_models = []
 
         for model in genai.list_models():
 
-            # Only models that support generateContent
+            # Only show models that support generateContent
             if "generateContent" in model.supported_generation_methods:
 
                 model_name = model.name.replace(
@@ -111,17 +109,18 @@ with st.sidebar:
         if available_models:
 
             model_name = st.selectbox(
-                "Gemini model",
+                "🤖 Gemini Model",
                 available_models,
                 index=0,
                 help=(
-                    "Automatically retrieved Gemini models "
-                    "available to your API key."
+                    "Models available to your "
+                    "Gemini API key."
                 )
             )
 
             st.caption(
-                f"{len(available_models)} compatible model(s) found."
+                f"{len(available_models)} "
+                f"model(s) available"
             )
 
         else:
@@ -142,8 +141,8 @@ with st.sidebar:
 
     st.caption(
         "Your resume text and job description are sent "
-        "directly to Google's Gemini API to generate "
-        "the analysis. Nothing is stored by this app."
+        "directly to Google's Gemini API for analysis. "
+        "Nothing is stored by this app."
     )
 
 
@@ -169,82 +168,7 @@ def extract_text_from_pdf(uploaded_file):
 
 
 # ============================================================
-# PROMPT
-# ============================================================
-
-PROMPT_TEMPLATE = """
-You are an expert ATS (Applicant Tracking System) and
-senior technical recruiter with deep knowledge of hiring
-across software engineering, data, analytics, AI/ML,
-product, marketing analytics and business roles.
-
-Compare the RESUME below against the JOB DESCRIPTION.
-
-Evaluate the resume based on:
-
-1. Skills
-2. Technical keywords
-3. Domain experience
-4. Years of experience
-5. Job responsibilities
-6. Education
-7. Tools and technologies
-8. Overall ATS compatibility
-
-Return your answer as VALID JSON ONLY.
-
-Use exactly this schema:
-
-{{
-  "match_percentage": <integer 0-100>,
-  "summary": "<2-3 sentence overall verdict>",
-  "matching_keywords": [
-    "<keyword found in both resume and JD>"
-  ],
-  "missing_keywords": [
-    "<important JD keyword/skill missing from resume>"
-  ],
-  "strengths": [
-    "<specific strength of this resume for this JD>"
-  ],
-  "gaps": [
-    "<specific gap or weakness relative to this JD>"
-  ],
-  "improvement_suggestions": [
-    "<concrete actionable suggestion to improve resume>"
-  ]
-}}
-
-RULES:
-
-- match_percentage must be between 0 and 100.
-- Evaluate real alignment, not just keyword frequency.
-- Do not artificially inflate the score.
-- Identify important missing technical skills.
-- Identify missing responsibilities.
-- Reference actual terms from the JD and resume.
-- Keep each list item under 20 words.
-- Do not invent experience that is not present.
-- Output ONLY the JSON object.
-- Do NOT use markdown.
-- Do NOT use ```json.
-
-JOB DESCRIPTION:
-
-"""
-{job_description}
-"""
-
-RESUME:
-
-"""
-{resume_text}
-"""
-"""
-
-
-# ============================================================
-# CLEAN JSON RESPONSE
+# CLEAN GEMINI JSON RESPONSE
 # ============================================================
 
 def clean_json_response(raw_text):
@@ -272,9 +196,28 @@ def clean_json_response(raw_text):
         text
     )
 
-    return json.loads(
-        text.strip()
-    )
+    text = text.strip()
+
+    # Try direct JSON parsing
+    try:
+        return json.loads(text)
+
+    except json.JSONDecodeError:
+
+        # Try extracting JSON object from response
+        match = re.search(
+            r"\{.*\}",
+            text,
+            flags=re.DOTALL
+        )
+
+        if match:
+
+            return json.loads(
+                match.group(0)
+            )
+
+        raise
 
 
 # ============================================================
@@ -288,22 +231,94 @@ def analyze_resume(
     model_name
 ):
 
+    # Configure Gemini
     genai.configure(
         api_key=api_key
     )
 
+    # Create selected Gemini model
     model = genai.GenerativeModel(
         model_name
     )
 
-    prompt = PROMPT_TEMPLATE.format(
-        job_description=job_description,
-        resume_text=resume_text
-    )
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Prompt is created INSIDE the function.
+    # This prevents the previous NameError.
+    # --------------------------------------------------------
+
+    prompt = f"""
+You are an expert ATS (Applicant Tracking System) and
+senior technical recruiter with deep knowledge of hiring
+across software engineering, data analytics, AI/ML,
+marketing analytics, product and business roles.
+
+Compare the RESUME against the JOB DESCRIPTION.
+
+Evaluate the resume based on:
+
+1. Skills
+2. Technical keywords
+3. Domain experience
+4. Years of experience
+5. Job responsibilities
+6. Education
+7. Tools and technologies
+8. Overall ATS compatibility
+
+Return ONLY a valid JSON object.
+
+Use exactly this structure:
+
+{{
+    "match_percentage": 0,
+    "summary": "2-3 sentence overall verdict",
+    "matching_keywords": [],
+    "missing_keywords": [],
+    "strengths": [],
+    "gaps": [],
+    "improvement_suggestions": []
+}}
+
+RULES:
+
+- match_percentage must be an integer between 0 and 100.
+- Evaluate real alignment, not just keyword frequency.
+- Do not artificially inflate the score.
+- Identify important missing technical skills.
+- Identify important missing responsibilities.
+- Reference actual terms from the job description and resume.
+- Keep each list item under 20 words.
+- Do not invent experience that is not present.
+- Do not assume the candidate has a skill that is not shown.
+- Output ONLY the JSON object.
+- Do NOT use markdown.
+- Do NOT use ```json.
+- Do NOT include explanations outside the JSON.
+
+JOB DESCRIPTION
+================
+
+{job_description}
+
+
+RESUME
+================
+
+{resume_text}
+"""
+
+    # --------------------------------------------------------
+    # SEND REQUEST TO GEMINI
+    # --------------------------------------------------------
 
     response = model.generate_content(
         prompt
     )
+
+    # --------------------------------------------------------
+    # CHECK RESPONSE
+    # --------------------------------------------------------
 
     if not response.text:
 
@@ -311,13 +326,17 @@ def analyze_resume(
             "Gemini returned an empty response."
         )
 
+    # --------------------------------------------------------
+    # PARSE JSON
+    # --------------------------------------------------------
+
     return clean_json_response(
         response.text
     )
 
 
 # ============================================================
-# MAIN UI
+# MAIN APPLICATION
 # ============================================================
 
 st.title(
@@ -332,15 +351,15 @@ st.write(
 
 
 # ============================================================
-# INPUT SECTION
+# INPUT AREA
 # ============================================================
 
 col1, col2 = st.columns(2)
 
 
-# ------------------------------------------------------------
+# ============================================================
 # JOB DESCRIPTION
-# ------------------------------------------------------------
+# ============================================================
 
 with col1:
 
@@ -348,14 +367,14 @@ with col1:
         "📋 Job Description",
         height=350,
         placeholder=(
-            "Paste the full job description here..."
+            "Paste the complete job description here..."
         )
     )
 
 
-# ------------------------------------------------------------
-# RESUME
-# ------------------------------------------------------------
+# ============================================================
+# RESUME UPLOAD
+# ============================================================
 
 with col2:
 
@@ -375,12 +394,13 @@ with col2:
             )
 
             with st.expander(
-                "Preview extracted resume text"
+                "👀 Preview Extracted Resume Text"
             ):
 
                 preview_text = resume_preview[:5000]
 
                 if len(resume_preview) > 5000:
+
                     preview_text += "..."
 
                 st.text(
@@ -406,52 +426,55 @@ analyze_clicked = st.button(
 
 
 # ============================================================
-# VALIDATION
+# ANALYSIS
 # ============================================================
 
 if analyze_clicked:
 
+    # --------------------------------------------------------
+    # VALIDATION
+    # --------------------------------------------------------
+
     if not api_key:
 
         st.error(
-            "Please enter your Gemini API key "
+            "❌ Please enter your Gemini API key "
             "in the sidebar."
         )
 
     elif not model_name:
 
         st.error(
-            "No Gemini model is available. "
-            "Please check your API key."
+            "❌ No Gemini model is available."
         )
 
     elif not job_description.strip():
 
         st.error(
-            "Please paste a job description."
+            "❌ Please paste a job description."
         )
 
     elif uploaded_resume is None:
 
         st.error(
-            "Please upload a resume PDF."
+            "❌ Please upload your resume PDF."
         )
 
     elif not resume_preview.strip():
 
         st.error(
-            "Could not extract any text from "
-            "that PDF. Try a different file."
+            "❌ Could not extract text from this PDF. "
+            "Try another PDF."
         )
 
     else:
 
-        # ====================================================
-        # CALL GEMINI
-        # ====================================================
+        # ----------------------------------------------------
+        # GEMINI ANALYSIS
+        # ----------------------------------------------------
 
         with st.spinner(
-            f"Analyzing resume using {model_name}..."
+            f"🤖 Analyzing resume using {model_name}..."
         ):
 
             try:
@@ -466,8 +489,8 @@ if analyze_clicked:
             except json.JSONDecodeError:
 
                 st.error(
-                    "Gemini returned a response that "
-                    "wasn't valid JSON. Please try again."
+                    "❌ Gemini returned invalid JSON. "
+                    "Please click Analyze again."
                 )
 
                 result = None
@@ -475,7 +498,7 @@ if analyze_clicked:
             except Exception as e:
 
                 st.error(
-                    f"Error calling Gemini API: {e}"
+                    f"❌ Error calling Gemini API: {e}"
                 )
 
                 result = None
@@ -540,7 +563,7 @@ if analyze_clicked:
             st.write(
                 result.get(
                     "summary",
-                    ""
+                    "No summary available."
                 )
             )
 
@@ -578,7 +601,7 @@ if analyze_clicked:
                 else:
 
                     st.info(
-                        "No matching keywords identified."
+                        "No matching keywords found."
                     )
 
 
@@ -608,7 +631,7 @@ if analyze_clicked:
                 else:
 
                     st.success(
-                        "No major missing keywords identified."
+                        "No major missing keywords found."
                     )
 
 
@@ -714,6 +737,5 @@ if analyze_clicked:
             st.markdown("---")
 
             st.caption(
-                f"🤖 Analysis generated using: "
-                f"`{model_name}`"
+                f"🤖 Model used: `{model_name}`"
             )
