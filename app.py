@@ -1,5 +1,5 @@
 import streamlit as st
-from google import genai
+import google.generativeai as genai
 from pypdf import PdfReader
 import json
 import re
@@ -21,10 +21,6 @@ st.set_page_config(
 # ============================================================
 
 def get_api_key():
-    """
-    Get Gemini API key from Streamlit Secrets.
-    """
-
     try:
         if "GEMINI_API_KEY" in st.secrets:
             return st.secrets["GEMINI_API_KEY"]
@@ -38,44 +34,39 @@ api_key = get_api_key()
 
 
 # ============================================================
-# GEMINI CLIENT
-# ============================================================
-
-@st.cache_resource
-def create_client(api_key):
-    return genai.Client(api_key=api_key)
-
-
-# ============================================================
 # GET AVAILABLE GEMINI MODELS
 # ============================================================
 
-@st.cache_data(ttl=3600)
 def get_available_models(api_key):
+    """
+    Automatically retrieve Gemini models available
+    to the supplied API key.
+    """
 
     try:
+        genai.configure(api_key=api_key)
 
-        client = create_client(api_key)
+        available_models = []
 
-        models = []
+        for model in genai.list_models():
 
-        for model in client.models.list():
+            # Only models that support generateContent
+            if "generateContent" in model.supported_generation_methods:
 
-            model_name = model.name
+                model_name = model.name.replace(
+                    "models/",
+                    ""
+                )
 
-            # Remove "models/" prefix if present
-            if model_name.startswith("models/"):
-                model_name = model_name.replace("models/", "", 1)
+                available_models.append(model_name)
 
-            # Keep models that support text generation
-            # based on available metadata
-            models.append(model_name)
-
-        return sorted(set(models))
+        return sorted(set(available_models))
 
     except Exception as e:
 
-        st.error(f"Could not retrieve Gemini models: {e}")
+        st.error(
+            f"Could not retrieve Gemini models: {e}"
+        )
 
         return []
 
@@ -88,6 +79,10 @@ with st.sidebar:
 
     st.header("⚙️ Settings")
 
+    # --------------------------------------------------------
+    # API KEY
+    # --------------------------------------------------------
+
     if not api_key:
 
         api_key = st.text_input(
@@ -98,16 +93,20 @@ with st.sidebar:
 
     else:
 
-        st.success("API key loaded from Streamlit Secrets ✅")
+        st.success(
+            "API key loaded from secrets ✅"
+        )
 
 
     # --------------------------------------------------------
-    # MODEL DROPDOWN
+    # MODEL SELECTION
     # --------------------------------------------------------
 
     if api_key:
 
-        available_models = get_available_models(api_key)
+        available_models = get_available_models(
+            api_key
+        )
 
         if available_models:
 
@@ -115,7 +114,14 @@ with st.sidebar:
                 "Gemini model",
                 available_models,
                 index=0,
-                help="Models currently available to your Gemini API key."
+                help=(
+                    "Automatically retrieved Gemini models "
+                    "available to your API key."
+                )
+            )
+
+            st.caption(
+                f"{len(available_models)} compatible model(s) found."
             )
 
         else:
@@ -123,7 +129,8 @@ with st.sidebar:
             model_name = None
 
             st.warning(
-                "No Gemini models were found for this API key."
+                "No Gemini models supporting "
+                "generateContent were found."
             )
 
     else:
@@ -134,9 +141,9 @@ with st.sidebar:
     st.markdown("---")
 
     st.caption(
-        "Your resume text and job description are sent directly "
-        "to Google's Gemini API for analysis. Nothing is stored "
-        "by this app."
+        "Your resume text and job description are sent "
+        "directly to Google's Gemini API to generate "
+        "the analysis. Nothing is stored by this app."
     )
 
 
@@ -146,9 +153,7 @@ with st.sidebar:
 
 def extract_text_from_pdf(uploaded_file):
 
-    """
-    Extract text from uploaded PDF.
-    """
+    """Extract text from uploaded PDF."""
 
     reader = PdfReader(uploaded_file)
 
@@ -168,25 +173,25 @@ def extract_text_from_pdf(uploaded_file):
 # ============================================================
 
 PROMPT_TEMPLATE = """
-You are an expert ATS (Applicant Tracking System) and senior
-technical recruiter with deep knowledge of hiring across
-software engineering, data, analytics, AI/ML, product and
-business roles.
+You are an expert ATS (Applicant Tracking System) and
+senior technical recruiter with deep knowledge of hiring
+across software engineering, data, analytics, AI/ML,
+product, marketing analytics and business roles.
 
-Compare the RESUME against the JOB DESCRIPTION.
+Compare the RESUME below against the JOB DESCRIPTION.
 
-Evaluate:
+Evaluate the resume based on:
 
 1. Skills
 2. Technical keywords
 3. Domain experience
 4. Years of experience
-5. Responsibilities
+5. Job responsibilities
 6. Education
 7. Tools and technologies
 8. Overall ATS compatibility
 
-Return ONLY valid JSON.
+Return your answer as VALID JSON ONLY.
 
 Use exactly this schema:
 
@@ -194,32 +199,32 @@ Use exactly this schema:
   "match_percentage": <integer 0-100>,
   "summary": "<2-3 sentence overall verdict>",
   "matching_keywords": [
-      "<keyword found in both resume and JD>"
+    "<keyword found in both resume and JD>"
   ],
   "missing_keywords": [
-      "<important JD keyword or skill missing from resume>"
+    "<important JD keyword/skill missing from resume>"
   ],
   "strengths": [
-      "<specific strength of resume for this JD>"
+    "<specific strength of this resume for this JD>"
   ],
   "gaps": [
-      "<specific gap relative to JD>"
+    "<specific gap or weakness relative to this JD>"
   ],
   "improvement_suggestions": [
-      "<specific actionable resume improvement>"
+    "<concrete actionable suggestion to improve resume>"
   ]
 }}
 
-Rules:
+RULES:
 
-- match_percentage must be an integer from 0 to 100.
-- Evaluate actual alignment, not just keyword frequency.
-- Do not inflate the score.
+- match_percentage must be between 0 and 100.
+- Evaluate real alignment, not just keyword frequency.
+- Do not artificially inflate the score.
 - Identify important missing technical skills.
-- Identify missing responsibilities where applicable.
+- Identify missing responsibilities.
 - Reference actual terms from the JD and resume.
 - Keep each list item under 20 words.
-- Do not invent experience that is not present in the resume.
+- Do not invent experience that is not present.
 - Output ONLY the JSON object.
 - Do NOT use markdown.
 - Do NOT use ```json.
@@ -239,14 +244,14 @@ RESUME:
 
 
 # ============================================================
-# CLEAN JSON
+# CLEAN JSON RESPONSE
 # ============================================================
 
 def clean_json_response(raw_text):
 
     text = raw_text.strip()
 
-    # Remove markdown code fences if Gemini adds them
+    # Remove ```json
     text = re.sub(
         r"^```json\s*",
         "",
@@ -254,6 +259,7 @@ def clean_json_response(raw_text):
         flags=re.IGNORECASE
     )
 
+    # Remove ```
     text = re.sub(
         r"^```\s*",
         "",
@@ -266,9 +272,9 @@ def clean_json_response(raw_text):
         text
     )
 
-    text = text.strip()
-
-    return json.loads(text)
+    return json.loads(
+        text.strip()
+    )
 
 
 # ============================================================
@@ -282,16 +288,21 @@ def analyze_resume(
     model_name
 ):
 
-    client = create_client(api_key)
+    genai.configure(
+        api_key=api_key
+    )
+
+    model = genai.GenerativeModel(
+        model_name
+    )
 
     prompt = PROMPT_TEMPLATE.format(
         job_description=job_description,
         resume_text=resume_text
     )
 
-    response = client.models.generate_content(
-        model=model_name,
-        contents=prompt
+    response = model.generate_content(
+        prompt
     )
 
     if not response.text:
@@ -300,27 +311,36 @@ def analyze_resume(
             "Gemini returned an empty response."
         )
 
-    return clean_json_response(response.text)
+    return clean_json_response(
+        response.text
+    )
 
 
 # ============================================================
 # MAIN UI
 # ============================================================
 
-st.title("📄 ATS Resume Checker")
+st.title(
+    "📄 ATS Resume Checker"
+)
 
 st.write(
-    "Paste a job description, upload your resume PDF, "
-    "and get an AI-powered ATS compatibility analysis."
+    "Paste a job description, upload your resume "
+    "(PDF), and get an AI-powered ATS-style "
+    "match analysis powered by Google Gemini."
 )
 
 
 # ============================================================
-# INPUTS
+# INPUT SECTION
 # ============================================================
 
 col1, col2 = st.columns(2)
 
+
+# ------------------------------------------------------------
+# JOB DESCRIPTION
+# ------------------------------------------------------------
 
 with col1:
 
@@ -328,15 +348,19 @@ with col1:
         "📋 Job Description",
         height=350,
         placeholder=(
-            "Paste the complete job description here..."
+            "Paste the full job description here..."
         )
     )
 
 
+# ------------------------------------------------------------
+# RESUME
+# ------------------------------------------------------------
+
 with col2:
 
     uploaded_resume = st.file_uploader(
-        "📄 Upload Resume",
+        "📄 Upload Resume (PDF)",
         type=["pdf"]
     )
 
@@ -354,14 +378,13 @@ with col2:
                 "Preview extracted resume text"
             ):
 
+                preview_text = resume_preview[:5000]
+
+                if len(resume_preview) > 5000:
+                    preview_text += "..."
+
                 st.text(
-                    resume_preview[:5000]
-                    +
-                    (
-                        "..."
-                        if len(resume_preview) > 5000
-                        else ""
-                    )
+                    preview_text
                 )
 
         except Exception as e:
@@ -383,7 +406,7 @@ analyze_clicked = st.button(
 
 
 # ============================================================
-# ANALYSIS
+# VALIDATION
 # ============================================================
 
 if analyze_clicked:
@@ -391,13 +414,15 @@ if analyze_clicked:
     if not api_key:
 
         st.error(
-            "Please enter your Gemini API key."
+            "Please enter your Gemini API key "
+            "in the sidebar."
         )
 
     elif not model_name:
 
         st.error(
-            "Please select an available Gemini model."
+            "No Gemini model is available. "
+            "Please check your API key."
         )
 
     elif not job_description.strip():
@@ -409,20 +434,24 @@ if analyze_clicked:
     elif uploaded_resume is None:
 
         st.error(
-            "Please upload your resume PDF."
+            "Please upload a resume PDF."
         )
 
     elif not resume_preview.strip():
 
         st.error(
-            "Could not extract text from this PDF. "
-            "Try another PDF."
+            "Could not extract any text from "
+            "that PDF. Try a different file."
         )
 
     else:
 
+        # ====================================================
+        # CALL GEMINI
+        # ====================================================
+
         with st.spinner(
-            f"Analyzing with {model_name}..."
+            f"Analyzing resume using {model_name}..."
         ):
 
             try:
@@ -437,8 +466,8 @@ if analyze_clicked:
             except json.JSONDecodeError:
 
                 st.error(
-                    "Gemini returned an invalid JSON response. "
-                    "Please try again."
+                    "Gemini returned a response that "
+                    "wasn't valid JSON. Please try again."
                 )
 
                 result = None
@@ -460,24 +489,35 @@ if analyze_clicked:
 
             st.markdown("---")
 
-            # ------------------------------------------------
-            # SCORE
-            # ------------------------------------------------
+
+            # =================================================
+            # ATS SCORE
+            # =================================================
 
             score = result.get(
                 "match_percentage",
                 0
             )
 
+            try:
+
+                score = int(score)
+
+            except:
+
+                score = 0
+
             score = max(
                 0,
                 min(
-                    int(score),
+                    score,
                     100
                 )
             )
 
-            st.subheader("📊 ATS Match Score")
+            st.subheader(
+                "📊 ATS Match Score"
+            )
 
             st.progress(
                 score / 100
@@ -489,9 +529,9 @@ if analyze_clicked:
             )
 
 
-            # ------------------------------------------------
+            # =================================================
             # SUMMARY
-            # ------------------------------------------------
+            # =================================================
 
             st.subheader(
                 "📝 Overall Summary"
@@ -505,12 +545,16 @@ if analyze_clicked:
             )
 
 
-            # ------------------------------------------------
+            # =================================================
             # KEYWORDS
-            # ------------------------------------------------
+            # =================================================
 
             c1, c2 = st.columns(2)
 
+
+            # -------------------------------------------------
+            # MATCHING KEYWORDS
+            # -------------------------------------------------
 
             with c1:
 
@@ -538,6 +582,10 @@ if analyze_clicked:
                     )
 
 
+            # -------------------------------------------------
+            # MISSING KEYWORDS
+            # -------------------------------------------------
+
             with c2:
 
                 st.subheader(
@@ -564,12 +612,16 @@ if analyze_clicked:
                     )
 
 
-            # ------------------------------------------------
+            # =================================================
             # STRENGTHS & GAPS
-            # ------------------------------------------------
+            # =================================================
 
             c3, c4 = st.columns(2)
 
+
+            # -------------------------------------------------
+            # STRENGTHS
+            # -------------------------------------------------
 
             with c3:
 
@@ -582,12 +634,24 @@ if analyze_clicked:
                     []
                 )
 
-                for strength in strengths:
+                if strengths:
 
-                    st.markdown(
-                        f"- {strength}"
+                    for strength in strengths:
+
+                        st.markdown(
+                            f"- {strength}"
+                        )
+
+                else:
+
+                    st.info(
+                        "No strengths identified."
                     )
 
+
+            # -------------------------------------------------
+            # GAPS
+            # -------------------------------------------------
 
             with c4:
 
@@ -600,16 +664,24 @@ if analyze_clicked:
                     []
                 )
 
-                for gap in gaps:
+                if gaps:
 
-                    st.markdown(
-                        f"- {gap}"
+                    for gap in gaps:
+
+                        st.markdown(
+                            f"- {gap}"
+                        )
+
+                else:
+
+                    st.info(
+                        "No major gaps identified."
                     )
 
 
-            # ------------------------------------------------
-            # SUGGESTIONS
-            # ------------------------------------------------
+            # =================================================
+            # IMPROVEMENT SUGGESTIONS
+            # =================================================
 
             st.subheader(
                 "🛠️ Resume Improvement Suggestions"
@@ -620,20 +692,28 @@ if analyze_clicked:
                 []
             )
 
-            for suggestion in suggestions:
+            if suggestions:
 
-                st.markdown(
-                    f"- {suggestion}"
+                for suggestion in suggestions:
+
+                    st.markdown(
+                        f"- {suggestion}"
+                    )
+
+            else:
+
+                st.info(
+                    "No improvement suggestions returned."
                 )
 
 
-            # ------------------------------------------------
-            # MODEL USED
-            # ------------------------------------------------
+            # =================================================
+            # MODEL INFORMATION
+            # =================================================
 
             st.markdown("---")
 
             st.caption(
-                f"Analysis generated using Gemini model: "
+                f"🤖 Analysis generated using: "
                 f"`{model_name}`"
             )
